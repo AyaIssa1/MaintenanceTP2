@@ -1,0 +1,227 @@
+
+pipeline {
+  agent any
+
+  options {
+    timestamps()
+    ansiColor('xterm')
+    skipDefaultCheckout(true)                 // pas de "checkout scm"
+    buildDiscarder(logRotator(numToKeepStr: '15'))
+  }
+
+  environment {
+    // Répertoires montés dans le conteneur Jenkins
+    PROJ = '/workspace'
+    BACK = '/workspace/backend'
+
+    // Docker image tag
+    IMG  = "maint_backend:${BUILD_NUMBER}"
+
+    // E-mails
+    MAIL_TO   = 'ikramsaidi47@gmail.com'      // destinataire
+    MAIL_FROM = 'tonmail@gmail.com'          // DOIT correspondre au compte SMTP configuré
+    MAIL_REPLY= 'tonmail@gmail.com'          // reply-to (souvent = from)
+  }
+
+  stages {
+
+    stage('Preflight (/workspace)') {
+      steps {
+        sh '''
+          set -euo pipefail
+          echo "== Vérification du montage /workspace =="
+          if [ ! -d "$PROJ" ]; then
+            echo "ERREUR: $PROJ n'existe pas dans le conteneur Jenkins."
+            echo "Assure-toi d'avoir un volume Docker compose type: - .:/workspace"
+            exit 2
+          fi
+          if [ ! -d "$BACK" ] || [ ! -f "$BACK/pom.xml" ]; then
+            echo "ERREUR: $BACK/pom.xml introuvable. Structure attendue: /workspace/backend/pom.xml"
+            exit 2
+          fi
+          echo "[OK] backend détecté."
+        '''
+      }
+    }
+
+    stage('Show workspace') {
+      steps {
+        sh '''
+          echo "== Listing /workspace ==" && ls -la "$PROJ"
+          echo "== Listing backend =="    && ls -la "$BACK"
+        '''
+      }
+    }
+
+    stage('Build & Unit / IT Tests (Maven)') {
+      steps {
+        sh '''
+          set -euxo pipefail
+          cd "$BACK"
+
+          # Normalise le wrapper (CRLF -> LF) + exécutable
+          if [ ! -f mvnw ]; then
+            echo "ERROR: mvnw not found in $BACK"
+            ls -la
+            exit 1
+          fi
+          sed -i 's/\r$//' mvnw || true
+          chmod +x mvnw
+
+          # Build + tests (unitaires + d’intégration si définis)
+          ./mvnw -B -U -DskipTests=false clean verify
+        '''
+      }
+      post {
+        always {
+          // Copie les rapports XML vers le workspace Jenkins (pour junit)
+          sh '''
+            set -eux
+            mkdir -p "${WORKSPACE}/reports/surefire" "${WORKSPACE}/reports/failsafe"
+            cp -f "${BACK}/target/surefire-reports/"*.xml "${WORKSPACE}/reports/surefire/"  || true
+            cp -f "${BACK}/target/failsafe-reports/"*.xml "${WORKSPACE}/reports/failsafe/" || true
+          '''
+          junit allowEmptyResults: true, keepLongStdio: true, testResults: 'reports/surefire/*.xml'
+          junit allowEmptyResults: true, keepLongStdio: true, testResults: 'reports/failsafe/*.xml'
+        }
+        success {
+          // Archive le JAR
+          sh '''
+            set -eux
+            mkdir -p "${WORKSPACE}/artifacts"
+            cp -f "${BACK}/target/"*.jar "${WORKSPACE}/artifacts/" || true
+          '''
+          archiveArtifacts allowEmptyArchive: true, artifacts: 'artifacts/*.jar', fingerprint: true
+        }
+      }
+    }
+
+    stage('Quality Gate (JaCoCo >= 75%)') {
+      steps {
+        // Requiert le plugin Jenkins "JaCoCo"
+        jacoco execPattern:   'backend/target/jacoco.exec',
+               classPattern:  'backend/target/classes',
+               sourcePattern: 'backend/src/main/java',
+               changeBuildStatus: true,
+               minimumInstructionCoverage: '0.75'
+      }
+    }
+
+    stage('JaCoCo HTML report (archive)') {
+      steps {
+        sh '''
+          set -eux
+          cd "$BACK"
+          ./mvnw -B -U jacoco:report || true
+          mkdir -p "${WORKSPACE}/jacoco"
+          cp -r target/site/jacoco/* "${WORKSPACE}/jacoco/" || true
+        '''
+      }
+      post {
+        always {
+          archiveArtifacts allowEmptyArchive: true, artifacts: 'jacoco/**'
+        }
+      }
+    }
+
+    stage('Docker Build (backend)') {
+      steps {
+        sh '''
+          set -eux
+          if ! command -v docker >/dev/null 2>&1; then
+            echo "Docker CLI indisponible dans l'agent — on saute la build d'image."
+            exit 0
+          fi
+          cd "$PROJ"
+          if [ ! -f backend/Dockerfile ]; then
+            echo "Pas de Dockerfile dans backend/ — on saute la build d'image."
+            exit 0
+          fi
+          docker build -t "$IMG" backend
+          docker image ls "$IMG"
+        '''
+      }
+    }
+
+    stage('Smoke Test image') {
+      when { expression { return fileExists('backend/Dockerfile') } }
+      steps {
+        sh '''
+          set -eux
+          if ! command -v docker >/dev/null 2>&1; then
+            echo "Docker CLI indisponible — on saute le smoke test."
+            exit 0
+          fi
+
+          docker rm -f ci-backend >/dev/null 2>&1 || true
+          docker run -d --name ci-backend -p 18585:8585 "$IMG"
+
+          # Attend que l'app réponde (actuator/health ou /series)
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:18585/actuator/health >/dev/null 2>&1 \
+            || curl -sf http://localhost:18585/series >/dev/null 2>&1; then
+              echo "App is up"
+              exit 0
+            fi
+            sleep 2
+          done
+
+          echo "Service did not become healthy"
+          docker logs ci-backend || true
+          exit 1
+        '''
+      }
+      post {
+        always {
+          sh 'docker rm -f ci-backend >/dev/null 2>&1 || true'
+        }
+      }
+    }
+  }
+
+  post {
+    success {
+      emailext(
+        to: "${env.MAIL_TO}",
+        from: "${env.MAIL_FROM}",
+        replyTo: "${env.MAIL_REPLY}",
+        subject: "Build ${env.JOB_NAME} #${env.BUILD_NUMBER} SUCCESS",
+        mimeType: 'text/html',
+        body: """<p>Build OK.</p>
+                 <p><b>Image:</b> ${IMG}</p>
+                 <p><a href='${env.BUILD_URL}'>Console</a></p>""",
+        attachLog: true,
+        compressLog: true
+      )
+    }
+    failure {
+      emailext(
+        to: "${env.MAIL_TO}",
+        from: "${env.MAIL_FROM}",
+        replyTo: "${env.MAIL_REPLY}",
+        subject: "Build ${env.JOB_NAME} #${env.BUILD_NUMBER} FAILED",
+        mimeType: 'text/html',
+        body: """<p>Pipeline échoué — voir la console :</p>
+                 <p><a href='${env.BUILD_URL}'>${env.BUILD_URL}</a></p>""",
+        attachLog: true,
+        compressLog: true
+      )
+    }
+    unstable {
+      emailext(
+        to: "${env.MAIL_TO}",
+        from: "${env.MAIL_FROM}",
+        replyTo: "${env.MAIL_REPLY}",
+        subject: "Build ${env.JOB_NAME} #${env.BUILD_NUMBER} UNSTABLE",
+        mimeType: 'text/html',
+        body: """<p>Build UNSTABLE (couverture ou quality gate).</p>
+                 <p><a href='${env.BUILD_URL}'>Console</a></p>""",
+        attachLog: true,
+        compressLog: true
+      )
+    }
+    always {
+      cleanWs()  // nettoie le workspace Jenkins (n'affecte pas /workspace)
+    }
+  }
+}
