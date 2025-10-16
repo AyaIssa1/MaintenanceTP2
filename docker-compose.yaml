@@ -1,33 +1,57 @@
-version: '3.8'
+
 
 services:
   backend:
     build: ./backend
-    container_name: backend
-    ports:
-      - "8585:8585"
-    image: ayaissa/backend-maintenance:v1
+    container_name: maintenancetp2-backend
+    expose:
+      - "8585"
+    volumes:
+      - ./backend/data:/app/data
+      - ./backend/persons.db:/app/persons.db
     restart: unless-stopped
+    networks: [maintenet]
 
   frontend:
-    build: ./frontend
-    container_name: frontend
-    ports:
-      - "80:80"
-    image: ayaissa/frontend-maintenance:v1
+    build:
+      context: ./frontend
+      args:
+        REACT_APP_API_BASE_URL: "http://10.10.2.134:8585"
+    container_name: maintenancetp2-frontend
+    expose:
+      - "80"
     restart: unless-stopped
+    networks: [maintenet]
+
+  nginx:
+    image: nginx:latest
+    container_name: nginx
+    depends_on: [frontend, backend]
+    ports:
+      - "8080:80"     # site
+      - "8585:8585"   # on expose 8585 via Nginx to access backend directly
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    restart: unless-stopped
+    networks: [maintenet]
 
   jenkins:
-    build: ./jenkins
-    container_name: jenkins
+    build: ./docker-env
+    container_name: maintenancetp2-jenkins
     user: root
     ports:
-      - "8080:8080"
+      - "8081:8080"
       - "50000:50000"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - jenkins_home:/var/jenkins_home
+      - ./:/workspace
     restart: unless-stopped
+    networks: [maintenet]
 
 volumes:
   jenkins_home:
+
+networks:
+  maintenet:
+    driver: bridge
