@@ -1,26 +1,21 @@
-
 pipeline {
   agent any
 
   options {
     timestamps()
     ansiColor('xterm')
-    skipDefaultCheckout(true)                 // pas de "checkout scm"
+    skipDefaultCheckout(true)
     buildDiscarder(logRotator(numToKeepStr: '15'))
   }
 
   environment {
-    // Répertoires montés dans le conteneur Jenkins
     PROJ = '/workspace'
     BACK = '/workspace/backend'
-
-    // Docker image tag
     IMG  = "maint_backend:${BUILD_NUMBER}"
 
-    // E-mails
-    MAIL_TO   = 'ikramsaidi47@gmail.com'      // destinataire
-    MAIL_FROM = 'tonmail@gmail.com'          // DOIT correspondre au compte SMTP configuré
-    MAIL_REPLY= 'tonmail@gmail.com'          // reply-to (souvent = from)
+    MAIL_TO   = 'ikramsaidi47@gmail.com'
+    MAIL_FROM = 'tonmail@gmail.com'
+    MAIL_REPLY= 'tonmail@gmail.com'
   }
 
   stages {
@@ -28,6 +23,7 @@ pipeline {
     stage('Preflight (/workspace)') {
       steps {
         sh '''
+          #!/bin/bash
           set -euo pipefail
           echo "== Vérification du montage /workspace =="
           if [ ! -d "$PROJ" ]; then
@@ -47,6 +43,7 @@ pipeline {
     stage('Show workspace') {
       steps {
         sh '''
+          #!/bin/bash
           echo "== Listing /workspace ==" && ls -la "$PROJ"
           echo "== Listing backend =="    && ls -la "$BACK"
         '''
@@ -56,10 +53,10 @@ pipeline {
     stage('Build & Unit / IT Tests (Maven)') {
       steps {
         sh '''
+          #!/bin/bash
           set -euxo pipefail
           cd "$BACK"
 
-          # Normalise le wrapper (CRLF -> LF) + exécutable
           if [ ! -f mvnw ]; then
             echo "ERROR: mvnw not found in $BACK"
             ls -la
@@ -68,14 +65,13 @@ pipeline {
           sed -i 's/\r$//' mvnw || true
           chmod +x mvnw
 
-          # Build + tests (unitaires + d’intégration si définis)
           ./mvnw -B -U -DskipTests=false clean verify
         '''
       }
       post {
         always {
-          // Copie les rapports XML vers le workspace Jenkins (pour junit)
           sh '''
+            #!/bin/bash
             set -eux
             mkdir -p "${WORKSPACE}/reports/surefire" "${WORKSPACE}/reports/failsafe"
             cp -f "${BACK}/target/surefire-reports/"*.xml "${WORKSPACE}/reports/surefire/"  || true
@@ -85,8 +81,8 @@ pipeline {
           junit allowEmptyResults: true, keepLongStdio: true, testResults: 'reports/failsafe/*.xml'
         }
         success {
-          // Archive le JAR
           sh '''
+            #!/bin/bash
             set -eux
             mkdir -p "${WORKSPACE}/artifacts"
             cp -f "${BACK}/target/"*.jar "${WORKSPACE}/artifacts/" || true
@@ -98,8 +94,7 @@ pipeline {
 
     stage('Quality Gate (JaCoCo >= 75%)') {
       steps {
-        // Requiert le plugin Jenkins "JaCoCo"
-        jacoco execPattern:   'backend/target/jacoco.exec',
+        jacoco execPattern:   'backend/target/*.exec',
                classPattern:  'backend/target/classes',
                sourcePattern: 'backend/src/main/java',
                changeBuildStatus: true,
@@ -110,6 +105,7 @@ pipeline {
     stage('JaCoCo HTML report (archive)') {
       steps {
         sh '''
+          #!/bin/bash
           set -eux
           cd "$BACK"
           ./mvnw -B -U jacoco:report || true
@@ -127,6 +123,7 @@ pipeline {
     stage('Docker Build (backend)') {
       steps {
         sh '''
+          #!/bin/bash
           set -eux
           if ! command -v docker >/dev/null 2>&1; then
             echo "Docker CLI indisponible dans l'agent — on saute la build d'image."
@@ -147,6 +144,7 @@ pipeline {
       when { expression { return fileExists('backend/Dockerfile') } }
       steps {
         sh '''
+          #!/bin/bash
           set -eux
           if ! command -v docker >/dev/null 2>&1; then
             echo "Docker CLI indisponible — on saute le smoke test."
@@ -156,7 +154,6 @@ pipeline {
           docker rm -f ci-backend >/dev/null 2>&1 || true
           docker run -d --name ci-backend -p 18585:8585 "$IMG"
 
-          # Attend que l'app réponde (actuator/health ou /series)
           for i in $(seq 1 30); do
             if curl -sf http://localhost:18585/actuator/health >/dev/null 2>&1 \
             || curl -sf http://localhost:18585/series >/dev/null 2>&1; then
@@ -173,7 +170,10 @@ pipeline {
       }
       post {
         always {
-          sh 'docker rm -f ci-backend >/dev/null 2>&1 || true'
+          sh '''
+            #!/bin/bash
+            docker rm -f ci-backend >/dev/null 2>&1 || true
+          '''
         }
       }
     }
@@ -221,7 +221,7 @@ pipeline {
       )
     }
     always {
-      cleanWs()  // nettoie le workspace Jenkins (n'affecte pas /workspace)
+      cleanWs()
     }
   }
 }
