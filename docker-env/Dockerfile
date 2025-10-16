@@ -1,15 +1,19 @@
-# Image de base Ubuntu
-FROM ubuntu:22.04
+FROM jenkins/jenkins:lts
 
-# Installer Maven, JDK et Git
+
+USER root
+
 RUN apt-get update && apt-get install -y \
     maven \
-    openjdk-17-jdk \
     git \
- && apt-get clean
+    openjdk-17-jdk \
+    && apt-get clean
 
-# Creer un repertoire de travail
+
 WORKDIR /workspace
 
-# Verifie les versions
+
 RUN java -version && mvn -version && git --version
+
+USER jenkins
+
