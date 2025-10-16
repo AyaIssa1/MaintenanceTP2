@@ -1,19 +1,15 @@
 FROM jenkins/jenkins:lts
 
-
 USER root
 
+# Installation de bash, docker CLI, curl, git et maven
 RUN apt-get update && apt-get install -y \
-    maven \
+    bash \
+    curl \
     git \
+    maven \
+    docker-ce-cli \
     openjdk-17-jdk \
-    && apt-get clean
-
-
-WORKDIR /workspace
-
-
-RUN java -version && mvn -version && git --version
+ && apt-get clean
 
 USER jenkins
-
