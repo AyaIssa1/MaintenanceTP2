@@ -2,7 +2,7 @@ pipeline {
     agent {
         docker {
             image 'maven:3.9.9-eclipse-temurin-17'
-            args '-v /var/run/docker.sock:/var/run/docker.sock -v $PWD:/workspace'
+            args '-v /var/run/docker.sock:/var/run/docker.sock -v $PWD:/workspace --entrypoint=""'
         }
     }
 
@@ -26,11 +26,12 @@ pipeline {
         stage('Preflight (/workspace)') {
             steps {
                 sh '''
-                    set -euo pipefail
-                    echo "== Vérification du montage /workspace =="
-                    [ -d "$PROJ" ] || { echo "ERREUR: $PROJ n'existe pas."; exit 2; }
-                    [ -f "$BACK/pom.xml" ] || { echo "ERREUR: $BACK/pom.xml introuvable."; exit 2; }
-                    echo "[OK] backend détecté."
+#!/bin/bash
+set -euo pipefail
+echo "== Vérification du montage /workspace =="
+[ -d "$PROJ" ] || { echo "ERREUR: $PROJ n'existe pas."; exit 2; }
+[ -f "$BACK/pom.xml" ] || { echo "ERREUR: $BACK/pom.xml introuvable."; exit 2; }
+echo "[OK] backend détecté."
                 '''
             }
         }
@@ -38,8 +39,9 @@ pipeline {
         stage('Show workspace') {
             steps {
                 sh '''
-                    echo "== Listing /workspace ==" && ls -la "$PROJ"
-                    echo "== Listing backend ==" && ls -la "$BACK"
+#!/bin/bash
+echo "== Listing /workspace ==" && ls -la "$PROJ"
+echo "== Listing backend ==" && ls -la "$BACK"
                 '''
             }
         }
@@ -48,28 +50,31 @@ pipeline {
             steps {
                 dir("${BACK}") {
                     sh '''
-                        set -euxo pipefail
-                        [ -f mvnw ] || { echo "ERREUR: mvnw introuvable"; exit 1; }
-                        sed -i 's/\r$//' mvnw || true
-                        chmod +x mvnw
-                        ./mvnw -B -U clean verify
+#!/bin/bash
+set -euxo pipefail
+[ -f mvnw ] || { echo "ERREUR: mvnw introuvable"; exit 1; }
+sed -i 's/\r$//' mvnw || true
+chmod +x mvnw
+./mvnw -B -U clean verify
                     '''
                 }
             }
             post {
                 always {
                     sh '''
-                        mkdir -p "${REPORTS_DIR}/surefire" "${REPORTS_DIR}/failsafe"
-                        cp -f "${BACK}/target/surefire-reports/"*.xml "${REPORTS_DIR}/surefire/" || true
-                        cp -f "${BACK}/target/failsafe-reports/"*.xml "${REPORTS_DIR}/failsafe/" || true
+#!/bin/bash
+mkdir -p "${REPORTS_DIR}/surefire" "${REPORTS_DIR}/failsafe"
+cp -f "${BACK}/target/surefire-reports/"*.xml "${REPORTS_DIR}/surefire/" || true
+cp -f "${BACK}/target/failsafe-reports/"*.xml "${REPORTS_DIR}/failsafe/" || true
                     '''
                     junit allowEmptyResults: true, keepLongStdio: true, testResults: 'reports/surefire/*.xml'
                     junit allowEmptyResults: true, keepLongStdio: true, testResults: 'reports/failsafe/*.xml'
                 }
                 success {
                     sh '''
-                        mkdir -p "${ARTIFACTS_DIR}"
-                        cp -f "${BACK}/target/"*.jar "${ARTIFACTS_DIR}/" || true
+#!/bin/bash
+mkdir -p "${ARTIFACTS_DIR}"
+cp -f "${BACK}/target/"*.jar "${ARTIFACTS_DIR}/" || true
                     '''
                     archiveArtifacts allowEmptyArchive: true, artifacts: 'artifacts/*.jar', fingerprint: true
                 }
@@ -89,11 +94,12 @@ pipeline {
         stage('JaCoCo HTML Report') {
             steps {
                 sh '''
-                    set -eux
-                    cd "$BACK"
-                    ./mvnw -B -U jacoco:report || true
-                    mkdir -p "${JACOCO_DIR}"
-                    cp -r target/site/jacoco/* "${JACOCO_DIR}/" || true
+#!/bin/bash
+set -eux
+cd "$BACK"
+./mvnw -B -U jacoco:report || true
+mkdir -p "${JACOCO_DIR}"
+cp -r target/site/jacoco/* "${JACOCO_DIR}/" || true
                 '''
             }
             post {
@@ -106,11 +112,12 @@ pipeline {
         stage('Docker Build (backend)') {
             steps {
                 sh '''
-                    set -eux
-                    command -v docker >/dev/null 2>&1 || { echo "Docker CLI indisponible, skip."; exit 0; }
-                    [ -f backend/Dockerfile ] || { echo "Pas de Dockerfile, skip."; exit 0; }
-                    docker build -t "$IMG" backend
-                    docker image ls "$IMG"
+#!/bin/bash
+set -eux
+command -v docker >/dev/null 2>&1 || { echo "Docker CLI indisponible, skip."; exit 0; }
+[ -f backend/Dockerfile ] || { echo "Pas de Dockerfile, skip."; exit 0; }
+docker build -t "$IMG" backend
+docker image ls "$IMG"
                 '''
             }
         }
@@ -119,25 +126,25 @@ pipeline {
             when { expression { return fileExists('backend/Dockerfile') } }
             steps {
                 sh '''
-                    set -eux
-                    command -v docker >/dev/null 2>&1 || { echo "Docker CLI indisponible, skip."; exit 0; }
+#!/bin/bash
+set -eux
+command -v docker >/dev/null 2>&1 || { echo "Docker CLI indisponible, skip."; exit 0; }
 
-                    # Container temporaire pour tests
-                    docker rm -f ci-backend >/dev/null 2>&1 || true
-                    docker run -d --name ci-backend -p 18585:8585 "$IMG"
+docker rm -f ci-backend >/dev/null 2>&1 || true
+docker run -d --name ci-backend -p 18585:8585 "$IMG"
 
-                    for i in $(seq 1 30); do
-                        curl -sf http://localhost:18585/actuator/health >/dev/null 2>&1 && break
-                        curl -sf http://localhost:18585/series >/dev/null 2>&1 && break
-                        sleep 2
-                    done
+for i in $(seq 1 30); do
+    curl -sf http://localhost:18585/actuator/health >/dev/null 2>&1 && break
+    curl -sf http://localhost:18585/series >/dev/null 2>&1 && break
+    sleep 2
+done
 
-                    STATUS=$(docker inspect -f '{{.State.Running}}' ci-backend)
-                    if [ "$STATUS" != "true" ]; then
-                        echo "Service did not start"
-                        docker logs ci-backend || true
-                        exit 1
-                    fi
+STATUS=$(docker inspect -f '{{.State.Running}}' ci-backend)
+if [ "$STATUS" != "true" ]; then
+    echo "Service did not start"
+    docker logs ci-backend || true
+    exit 1
+fi
                 '''
             }
             post {
@@ -187,4 +194,3 @@ pipeline {
         }
     }
 }
-
