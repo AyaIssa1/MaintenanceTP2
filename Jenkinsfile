@@ -6,21 +6,20 @@ pipeline {
         }
     }
 
-    tools {
-        jdk 'jdk17'
-        maven 'Maven3'
-    }
-
     environment {
         JAVA_HOME = '/usr/lib/jvm/java-17-openjdk-amd64'
-        PATH = "${JAVA_HOME}/bin:${PATH}"
-        PROJ = '/workspace'
-        BACK = "${PROJ}/backend"
-        IMG  = "maint_backend:${BUILD_NUMBER}"
+        PATH      = "${JAVA_HOME}/bin:${PATH}"
+        PROJ      = '/workspace'
+        BACK      = "${PROJ}/backend"
+        IMG       = "maint_backend:${BUILD_NUMBER}"
 
         MAIL_TO   = 'ikramsaidi47@gmail.com'
         MAIL_FROM = 'tonmail@gmail.com'
         MAIL_REPLY= 'tonmail@gmail.com'
+
+        ARTIFACTS_DIR = "${WORKSPACE}/artifacts"
+        REPORTS_DIR   = "${WORKSPACE}/reports"
+        JACOCO_DIR    = "${WORKSPACE}/jacoco"
     }
 
     stages {
@@ -29,14 +28,8 @@ pipeline {
                 sh '''
                     set -euo pipefail
                     echo "== Vérification du montage /workspace =="
-                    if [ ! -d "$PROJ" ]; then
-                        echo "ERREUR: $PROJ n'existe pas dans le conteneur Jenkins."
-                        exit 2
-                    fi
-                    if [ ! -d "$BACK" ] || [ ! -f "$BACK/pom.xml" ]; then
-                        echo "ERREUR: $BACK/pom.xml introuvable."
-                        exit 2
-                    fi
+                    [ -d "$PROJ" ] || { echo "ERREUR: $PROJ n'existe pas."; exit 2; }
+                    [ -f "$BACK/pom.xml" ] || { echo "ERREUR: $BACK/pom.xml introuvable."; exit 2; }
                     echo "[OK] backend détecté."
                 '''
             }
@@ -46,44 +39,37 @@ pipeline {
             steps {
                 sh '''
                     echo "== Listing /workspace ==" && ls -la "$PROJ"
-                    echo "== Listing backend =="    && ls -la "$BACK"
+                    echo "== Listing backend ==" && ls -la "$BACK"
                 '''
             }
         }
 
-        stage('Build & Unit / IT Tests (Maven)') {
+        stage('Build & Tests Maven') {
             steps {
                 dir("${BACK}") {
-                    echo "Compilation + tests Maven..."
                     sh '''
                         set -euxo pipefail
-                        if [ ! -f mvnw ]; then
-                            echo "ERROR: mvnw not found in $BACK"
-                            ls -la
-                            exit 1
-                        fi
+                        [ -f mvnw ] || { echo "ERREUR: mvnw introuvable"; exit 1; }
                         sed -i 's/\r$//' mvnw || true
                         chmod +x mvnw
-                        ./mvnw -B -U -DskipTests=false clean verify
+                        ./mvnw -B -U clean verify
                     '''
                 }
             }
             post {
                 always {
                     sh '''
-                        set -eux
-                        mkdir -p "${WORKSPACE}/reports/surefire" "${WORKSPACE}/reports/failsafe"
-                        cp -f "${BACK}/target/surefire-reports/"*.xml "${WORKSPACE}/reports/surefire/"  || true
-                        cp -f "${BACK}/target/failsafe-reports/"*.xml "${WORKSPACE}/reports/failsafe/" || true
+                        mkdir -p "${REPORTS_DIR}/surefire" "${REPORTS_DIR}/failsafe"
+                        cp -f "${BACK}/target/surefire-reports/"*.xml "${REPORTS_DIR}/surefire/" || true
+                        cp -f "${BACK}/target/failsafe-reports/"*.xml "${REPORTS_DIR}/failsafe/" || true
                     '''
                     junit allowEmptyResults: true, keepLongStdio: true, testResults: 'reports/surefire/*.xml'
                     junit allowEmptyResults: true, keepLongStdio: true, testResults: 'reports/failsafe/*.xml'
                 }
                 success {
                     sh '''
-                        set -eux
-                        mkdir -p "${WORKSPACE}/artifacts"
-                        cp -f "${BACK}/target/"*.jar "${WORKSPACE}/artifacts/" || true
+                        mkdir -p "${ARTIFACTS_DIR}"
+                        cp -f "${BACK}/target/"*.jar "${ARTIFACTS_DIR}/" || true
                     '''
                     archiveArtifacts allowEmptyArchive: true, artifacts: 'artifacts/*.jar', fingerprint: true
                 }
@@ -92,22 +78,22 @@ pipeline {
 
         stage('Quality Gate (JaCoCo >= 75%)') {
             steps {
-                jacoco execPattern:   'backend/target/jacoco.exec',
-                       classPattern:  'backend/target/classes',
+                jacoco execPattern: 'backend/target/jacoco.exec',
+                       classPattern: 'backend/target/classes',
                        sourcePattern: 'backend/src/main/java',
                        changeBuildStatus: true,
                        minimumInstructionCoverage: '0.75'
             }
         }
 
-        stage('JaCoCo HTML report (archive)') {
+        stage('JaCoCo HTML Report') {
             steps {
                 sh '''
                     set -eux
                     cd "$BACK"
                     ./mvnw -B -U jacoco:report || true
-                    mkdir -p "${WORKSPACE}/jacoco"
-                    cp -r target/site/jacoco/* "${WORKSPACE}/jacoco/" || true
+                    mkdir -p "${JACOCO_DIR}"
+                    cp -r target/site/jacoco/* "${JACOCO_DIR}/" || true
                 '''
             }
             post {
@@ -121,45 +107,37 @@ pipeline {
             steps {
                 sh '''
                     set -eux
-                    if ! command -v docker >/dev/null 2>&1; then
-                        echo "Docker CLI indisponible, on saute la build d'image."
-                        exit 0
-                    fi
-                    cd "$PROJ"
-                    if [ ! -f backend/Dockerfile ]; then
-                        echo "Pas de Dockerfile dans backend/, on saute la build d'image."
-                        exit 0
-                    fi
+                    command -v docker >/dev/null 2>&1 || { echo "Docker CLI indisponible, skip."; exit 0; }
+                    [ -f backend/Dockerfile ] || { echo "Pas de Dockerfile, skip."; exit 0; }
                     docker build -t "$IMG" backend
                     docker image ls "$IMG"
                 '''
             }
         }
 
-        stage('Smoke Test image') {
+        stage('Smoke Test Image') {
             when { expression { return fileExists('backend/Dockerfile') } }
             steps {
                 sh '''
                     set -eux
-                    if ! command -v docker >/dev/null 2>&1; then
-                        echo "Docker CLI indisponible, on saute le smoke test."
-                        exit 0
-                    fi
+                    command -v docker >/dev/null 2>&1 || { echo "Docker CLI indisponible, skip."; exit 0; }
+
+                    # Container temporaire pour tests
                     docker rm -f ci-backend >/dev/null 2>&1 || true
                     docker run -d --name ci-backend -p 18585:8585 "$IMG"
 
                     for i in $(seq 1 30); do
-                        if curl -sf http://localhost:18585/actuator/health >/dev/null 2>&1 \
-                        || curl -sf http://localhost:18585/series >/dev/null 2>&1; then
-                            echo "App is up"
-                            exit 0
-                        fi
+                        curl -sf http://localhost:18585/actuator/health >/dev/null 2>&1 && break
+                        curl -sf http://localhost:18585/series >/dev/null 2>&1 && break
                         sleep 2
                     done
 
-                    echo "Service did not become healthy"
-                    docker logs ci-backend || true
-                    exit 1
+                    STATUS=$(docker inspect -f '{{.State.Running}}' ci-backend)
+                    if [ "$STATUS" != "true" ]; then
+                        echo "Service did not start"
+                        docker logs ci-backend || true
+                        exit 1
+                    fi
                 '''
             }
             post {
@@ -202,13 +180,11 @@ pipeline {
                 replyTo: "${env.MAIL_REPLY}",
                 subject: "Build ${env.JOB_NAME} #${env.BUILD_NUMBER} UNSTABLE",
                 mimeType: 'text/html',
-                body: """<p>Build instable (couverture ou quality gate).</p><p><a href='${env.BUILD_URL}'>Console Jenkins</a></p>""",
+                body: """<p>Build instable (quality gate ou couverture).</p><p><a href='${env.BUILD_URL}'>Console Jenkins</a></p>""",
                 attachLog: true,
                 compressLog: true
             )
         }
-        always {
-            cleanWs()
-        }
     }
 }
+
