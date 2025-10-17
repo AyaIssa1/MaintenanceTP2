@@ -26,12 +26,12 @@ pipeline {
         stage('Preflight (/workspace)') {
             steps {
                 sh '''
-#!/bin/bash
-set -euo pipefail
-echo "== Vérification du montage /workspace =="
-[ -d "$PROJ" ] || { echo "ERREUR: $PROJ n'existe pas."; exit 2; }
-[ -f "$BACK/pom.xml" ] || { echo "ERREUR: $BACK/pom.xml introuvable."; exit 2; }
-echo "[OK] backend détecté."
+		   #!/bin/bash
+                   set -euo pipefail
+                   echo "== Vérification du montage /workspace =="
+                   [ -d "$PROJ" ] || { echo "ERREUR: $PROJ n'existe pas."; exit 2; }
+                   [ -f "$BACK/pom.xml" ] || { echo "ERREUR: $BACK/pom.xml introuvable."; exit 2; }
+                   echo "[OK] backend détecté."
                 '''
             }
         }
