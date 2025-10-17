@@ -1,5 +1,5 @@
 # Utiliser l'image Jenkins officielle comme base
-FROM jenkins/jenkins:lts
+FROM jenkins/jenkins:lts-jdk17
 
 USER root
 
@@ -10,11 +10,9 @@ RUN apt-get update && apt-get install -y \
     git \
     maven \
     docker.io \
-    openjdk-17-jdk \
  && apt-get clean
 
 # Donner les droits à Jenkins d'utiliser Docker
 RUN usermod -aG docker jenkins
 
 USER jenkins
-
