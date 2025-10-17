@@ -100,108 +100,6 @@ pipeline {
             }
         }
 
-pipeline {
-    agent {
-        docker {
-            image 'maven:3.9.9-eclipse-temurin-17'
-            args '-v /var/run/docker.sock:/var/run/docker.sock -v $PWD:/workspace'
-        }
-    }
-
-    tools {
-        jdk 'jdk17'
-        maven 'Maven3'
-    }
-
-    environment {
-        JAVA_HOME = '/usr/lib/jvm/java-17-openjdk-amd64'
-        PATH = "${JAVA_HOME}/bin:${PATH}"
-        PROJ = '/workspace'
-        BACK = "${PROJ}/backend"
-        IMG  = "maint_backend:${BUILD_NUMBER}"
-
-        MAIL_TO   = 'ikramsaidi47@gmail.com'
-        MAIL_FROM = 'tonmail@gmail.com'
-        MAIL_REPLY= 'tonmail@gmail.com'
-    }
-
-    stages {
-        stage('Preflight (/workspace)') {
-            steps {
-                sh '''
-                    set -euo pipefail
-                    echo "== Vérification du montage /workspace =="
-                    if [ ! -d "$PROJ" ]; then
-                        echo "ERREUR: $PROJ n'existe pas dans le conteneur Jenkins."
-                        exit 2
-                    fi
-                    if [ ! -d "$BACK" ] || [ ! -f "$BACK/pom.xml" ]; then
-                        echo "ERREUR: $BACK/pom.xml introuvable."
-                        exit 2
-                    fi
-                    echo "[OK] backend détecté."
-                '''
-            }
-        }
-
-        stage('Show workspace') {
-            steps {
-                sh '''
-                    echo "== Listing /workspace ==" && ls -la "$PROJ"
-                    echo "== Listing backend =="    && ls -la "$BACK"
-                '''
-            }
-        }
-
-        stage('Build & Unit / IT Tests (Maven)') {
-            steps {
-                dir("${BACK}") {
-                    echo "Compilation + tests Maven..."
-                    sh '''
-                        set -euxo pipefail
-                        if [ ! -f mvnw ]; then
-                            echo "ERROR: mvnw not found in $BACK"
-                            ls -la
-                            exit 1
-                        fi
-                        sed -i 's/\r$//' mvnw || true
-                        chmod +x mvnw
-                        ./mvnw -B -U -DskipTests=false clean verify
-                    '''
-                }
-            }
-            post {
-                always {
-                    sh '''
-                        set -eux
-                        mkdir -p "${WORKSPACE}/reports/surefire" "${WORKSPACE}/reports/failsafe"
-                        cp -f "${BACK}/target/surefire-reports/"*.xml "${WORKSPACE}/reports/surefire/"  || true
-                        cp -f "${BACK}/target/failsafe-reports/"*.xml "${WORKSPACE}/reports/failsafe/" || true
-                    '''
-                    junit allowEmptyResults: true, keepLongStdio: true, testResults: 'reports/surefire/*.xml'
-                    junit allowEmptyResults: true, keepLongStdio: true, testResults: 'reports/failsafe/*.xml'
-                }
-                success {
-                    sh '''
-                        set -eux
-                        mkdir -p "${WORKSPACE}/artifacts"
-                        cp -f "${BACK}/target/"*.jar "${WORKSPACE}/artifacts/" || true
-                    '''
-                    archiveArtifacts allowEmptyArchive: true, artifacts: 'artifacts/*.jar', fingerprint: true
-                }
-            }
-        }
-
-        stage('Quality Gate (JaCoCo >= 75%)') {
-            steps {
-                jacoco execPattern:   'backend/target/jacoco.exec',
-                       classPattern:  'backend/target/classes',
-                       sourcePattern: 'backend/src/main/java',
-                       changeBuildStatus: true,
-                       minimumInstructionCoverage: '0.75'
-            }
-        }
-
         stage('JaCoCo HTML report (archive)') {
             steps {
                 sh '''
@@ -313,3 +211,4 @@ pipeline {
             cleanWs()
         }
     }
+}
