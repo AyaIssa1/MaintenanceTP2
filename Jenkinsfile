@@ -24,7 +24,6 @@ pipeline {
     }
 
     stages {
-
         stage('Preflight (/workspace)') {
             steps {
                 sh '''
@@ -65,7 +64,6 @@ pipeline {
                         fi
                         sed -i 's/\r$//' mvnw || true
                         chmod +x mvnw
-
                         ./mvnw -B -U -DskipTests=false clean verify
                     '''
                 }
@@ -102,117 +100,6 @@ pipeline {
             }
         }
 
-        stage('JaCoCo HTML report (archive)') {
-            steps {
-                sh '''
-                    set -eux
-                    cd "$BACK"
-                    ./mvnw -B -U jacoco:report || true
-                    mkdir -p "${WORKSPACE}/jacoco"
-                    cp -r target/site/jacoco/* "${WORKSPACE}/jacoco/" || true
-                '''
-            }
-            post {
-                always {
-                    archiveArtifacts allowEmptyArchive: true, artifacts: 'jacoco/**'
-                }
-            }
-        }
-
-        stage('Docker Build (backend)') {
-            steps {
-                sh '''
-                    set -eux
-                    if ! command -v docker >/dev/null 2>&1; then
-                        echo "Docker CLI indisponible, on saute la build d'image."
-                        exit 0
-                    fi
-                    cd "$PROJ"
-                    if [ ! -f backend/Dockerfile ]; then
-                        echo "Pas de Dockerfile dans backend/, on saute la build d'image."
-                        exit 0
-                    fi
-                    docker build -t "$IMG" backend
-                    docker image ls "$IMG"
-                '''
-            }
-        }
-
-        stage('Smoke Test image') {
-            when { expression { return fileExists('backend/Dockerfile') } }
-            steps {
-                sh '''
-                    set -eux
-                    if ! command -v docker >/dev/null 2>&1; then
-                        echo "Docker CLI indisponible, on saute le smoke test."
-                        exit 0
-                    fi
-
-                    docker rm -f ci-backend >/dev/null 2>&1 || true
-                    docker run -d --name ci-backend -p 18585:8585 "$IMG"
-
-                    for i in $(seq 1 30); do
-                        if curl -sf http://localhost:18585/actuator/health >/dev/null 2>&1 \
-                        || curl -sf http://localhost:18585/series >/dev/null 2>&1; then
-                            echo "App is up"
-                            exit 0
-                        fi
-                        sleep 2
-                    done
-
-                    echo "Service did not become healthy"
-                    docker logs ci-backend || true
-                    exit 1
-                '''
-            }
-            post {
-                always {
-                    sh 'docker rm -f ci-backend >/dev/null 2>&1 || true'
-                }
-            }
-        }
-    }
-
-    post {
-        success {
-            emailext(
-                to: "${env.MAIL_TO}",
-                from: "${env.MAIL_FROM}",
-                replyTo: "${env.MAIL_REPLY}",
-                subject: "Build ${env.JOB_NAME} #${env.BUILD_NUMBER} SUCCESS",
-                mimeType: 'text/html',
-                body: """<p>✅ Build réussi.</p><p><b>Image:</b> ${IMG}</p><p><a href='${env.BUILD_URL}'>Console Jenkins</a></p>""",
-                attachLog: true,
-                compressLog: true
-            )
-        }
-        failure {
-            emailext(
-                to: "${env.MAIL_TO}",
-                from: "${env.MAIL_FROM}",
-                replyTo: "${env.MAIL_REPLY}",
-                subject: "Build ${env.JOB_NAME} #${env.BUILD_NUMBER} FAILED",
-                mimeType: 'text/html',
-                body: """<p>❌ Le pipeline a échoué.</p><p><a href='${env.BUILD_URL}'>Voir les logs Jenkins</a></p>""",
-                attachLog: true,
-                compressLog: true
-            )
-        }
-        unstable {
-            emailext(
-                to: "${env.MAIL_TO}",
-                from: "${env.MAIL_FROM}",
-                replyTo: "${env.MAIL_REPLY}",
-                subject: "Build ${env.JOB_NAME} #${env.BUILD_NUMBER} UNSTABLE",
-                mimeType: 'text/html',
-                body: """<p>⚠️ Build instable (couverture ou quality gate).</p><p><a href='${env.BUILD_URL}'>Console Jenkins</a></p>""",
-                attachLog: true,
-                compressLog: true
-            )
-        }
-        always {
-            cleanWs()
-        }
 pipeline {
     agent {
         docker {
@@ -239,7 +126,6 @@ pipeline {
     }
 
     stages {
-
         stage('Preflight (/workspace)') {
             steps {
                 sh '''
@@ -280,7 +166,6 @@ pipeline {
                         fi
                         sed -i 's/\r$//' mvnw || true
                         chmod +x mvnw
-
                         ./mvnw -B -U -DskipTests=false clean verify
                     '''
                 }
@@ -362,7 +247,6 @@ pipeline {
                         echo "Docker CLI indisponible, on saute le smoke test."
                         exit 0
                     fi
-
                     docker rm -f ci-backend >/dev/null 2>&1 || true
                     docker run -d --name ci-backend -p 18585:8585 "$IMG"
 
@@ -396,7 +280,7 @@ pipeline {
                 replyTo: "${env.MAIL_REPLY}",
                 subject: "Build ${env.JOB_NAME} #${env.BUILD_NUMBER} SUCCESS",
                 mimeType: 'text/html',
-                body: """<p>✅ Build réussi.</p><p><b>Image:</b> ${IMG}</p><p><a href='${env.BUILD_URL}'>Console Jenkins</a></p>""",
+                body: """<p>Build réussi.</p><p><b>Image:</b> ${IMG}</p><p><a href='${env.BUILD_URL}'>Console Jenkins</a></p>""",
                 attachLog: true,
                 compressLog: true
             )
@@ -408,7 +292,7 @@ pipeline {
                 replyTo: "${env.MAIL_REPLY}",
                 subject: "Build ${env.JOB_NAME} #${env.BUILD_NUMBER} FAILED",
                 mimeType: 'text/html',
-                body: """<p>❌ Le pipeline a échoué.</p><p><a href='${env.BUILD_URL}'>Voir les logs Jenkins</a></p>""",
+                body: """<p>Le pipeline a échoué.</p><p><a href='${env.BUILD_URL}'>Voir les logs Jenkins</a></p>""",
                 attachLog: true,
                 compressLog: true
             )
@@ -420,7 +304,7 @@ pipeline {
                 replyTo: "${env.MAIL_REPLY}",
                 subject: "Build ${env.JOB_NAME} #${env.BUILD_NUMBER} UNSTABLE",
                 mimeType: 'text/html',
-                body: """<p>⚠️ Build instable (couverture ou quality gate).</p><p><a href='${env.BUILD_URL}'>Console Jenkins</a></p>""",
+                body: """<p>Build instable (couverture ou quality gate).</p><p><a href='${env.BUILD_URL}'>Console Jenkins</a></p>""",
                 attachLog: true,
                 compressLog: true
             )
@@ -429,4 +313,3 @@ pipeline {
             cleanWs()
         }
     }
-}
